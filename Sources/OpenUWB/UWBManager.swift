@@ -214,17 +214,15 @@ public class UWBManager {
 #if !os(watchOS)
         if #available(iOS 16.0, *) {
             accessory.configuration!.isCameraAssistanceEnabled = options.useCameraAssistance
+            if let arSession = self.arSession {
+                accessory.niSession.setARSession(arSession)
+            }
         }
 #endif
         
         // Cache the token to correlate updates with this accessory.
         accessory.cacheToken(accessory.configuration!.accessoryDiscoveryToken, identifier: accessory.publicIdentifier)
         accessory.niSession.delegate = accessory
-#if !os(watchOS)
-        if #available(iOS 16.0, *), let arSession = self.arSession {
-            accessory.niSession.setARSession(arSession)
-        }
-#endif
         accessory.niSession.run(accessory.configuration!)
     }
     

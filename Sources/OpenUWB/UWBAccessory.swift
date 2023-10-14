@@ -19,6 +19,22 @@ public class UWBAccessory: NSObject {
     var configuration: NINearbyAccessoryConfiguration?
     
     public var distance: Float?
+    public var direction: simd_float3?
+
+    @available(iOS 16.0, *)
+    @available(watchOS 9.0, *)
+    public private(set) var horizontalAngle: Float? {
+        get {
+            return _horizontalAngle
+        }
+        set {
+            _horizontalAngle = newValue
+        }
+    }
+    
+    private var _horizontalAngle: Float?
+    
+    public var verticalDirectionEstimate: NINearbyObject.VerticalDirectionEstimate = .unknown
     
     // A mapping from a discovery token to a name.
     var accessoryMap = [NIDiscoveryToken: String]()
@@ -105,6 +121,10 @@ extension UWBAccessory: NISessionDelegate {
         //guard let name = accessoryMap[accessory.discoveryToken] else { return }
         
         self.distance = accessory.distance
+        self.direction = accessory.direction
+        if #available(iOS 16.0, watchOS 9.0, *) {
+            self.horizontalAngle = accessory.horizontalAngle
+        }
         manager.delegate.didUpdateAccessory(accessory: self)
     }
 
