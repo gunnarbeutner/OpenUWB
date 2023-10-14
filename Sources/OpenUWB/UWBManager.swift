@@ -11,6 +11,9 @@
 
 import os.log
 import NearbyInteraction
+#if !os(watchOS)
+import ARKit
+#endif
 
 // An example messaging protocol for communications between the app and the
 // accessory. In your app, modify or extend this enumeration to your app's
@@ -27,24 +30,95 @@ enum MessageId: UInt8 {
     case stop = 0xC
 }
 
+public struct UWBManagerOptions {
+    public var handleConnectivity: Bool = true
+    
+#if !os(watchOS)
+    @available(iOS 16.0, *)
+    public var useCameraAssistance: Bool {
+        get {
+            return _useCameraAssistance
+        }
+        set {
+            _useCameraAssistance = newValue
+        }
+    }
+    
+    private var _useCameraAssistance: Bool = false
+#endif
+
+    public init() {
+        
+    }
+}
+
+#if !os(watchOS)
+private class UWBManagerARSessionDelegate : NSObject, ARSessionDelegate {
+    func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool {
+        return false
+    }
+}
+#endif
+
 public class UWBManager {
     var dataChannel = DataCommunicationChannel()
     var delegate: UWBManagerDelegate
-
+    var options: UWBManagerOptions
+#if !os(watchOS)
+    var arSession: ARSession?
+    private var arSessionDelegate: UWBManagerARSessionDelegate?
+#endif
+    
     // XXX: get rid of this and let the caller keep references to the accessories
-    public var accessories: [UUID: UWBAccessory] = [:]
+    private var accessories: [String: UWBAccessory] = [:]
 
-    public init(delegate: UWBManagerDelegate) {
+    public init(delegate: UWBManagerDelegate, options: UWBManagerOptions = UWBManagerOptions()) {
         self.delegate = delegate
+        self.options = options
     }
     
+#if !os(watchOS)
+    @available(iOS 16.0, *)
+    public func setARSession(_ session: ARSession) {
+        assert(self.arSession == nil && options.useCameraAssistance)
+        self.arSession = session
+    }
+#endif
+    
     public func start() {
+#if !os(watchOS)
+        if #available(iOS 16.0, *), options.useCameraAssistance, self.arSession == nil {
+            self.arSession = ARSession()
+            let arConfiguration = ARWorldTrackingConfiguration()
+            
+            self.arSessionDelegate = UWBManagerARSessionDelegate()
+            arSession!.delegate = arSessionDelegate
+            
+            // These are all defaults anyway, at least when tested with iOS 17.0
+            arConfiguration.worldAlignment = .gravity
+            arConfiguration.isCollaborationEnabled = false
+            arConfiguration.userFaceTrackingEnabled = false
+            arConfiguration.initialWorldMap = nil
+            
+            self.arSession!.run(arConfiguration)
+        }
+#endif
+
+        dataChannel.accessoryDiscoveredHandler = accessoryDiscovered
         dataChannel.accessoryConnectedHandler = accessoryConnected
         dataChannel.accessoryDisconnectedHandler = accessoryDisconnected
         dataChannel.accessoryDataHandler = accessorySharedData
         dataChannel.start()
     }
     
+    public func connect(_ accessory: BluetoothAccessory) {
+        dataChannel.connect(accessory: accessory)
+    }
+
+    public func disconnect(_ accessory: BluetoothAccessory) {
+        dataChannel.disconnect(accessory: accessory)
+    }
+
     // MARK: - Data channel methods
     
     func accessorySharedData(bluetoothAccessory: OpenUWB.BluetoothAccessory, data: Data) {
@@ -66,7 +140,7 @@ public class UWBManager {
             // Access the message data by skipping the message identifier.
             assert(data.count > 1)
             let message = data.advanced(by: 1)
-            let accessory = accessories[bluetoothAccessory.discoveredPeripheral.identifier]!
+            guard let accessory = accessories[bluetoothAccessory.publicIdentifier] else { return }
             setupAccessory(accessory: accessory, configData: message)
         case .accessoryUwbDidStart:
             handleAccessoryUwbDidStart()
@@ -81,33 +155,54 @@ public class UWBManager {
         }
     }
     
-    func accessoryConnected(bluetoothAccessory: OpenUWB.BluetoothAccessory) {
+    func accessoryDiscovered(bluetoothAccessory: BluetoothAccessory, rssi: NSNumber) {
+        if options.handleConnectivity {
+            connect(bluetoothAccessory)
+        }
+        delegate.didDiscover(accessory: bluetoothAccessory, rssi: rssi)
+    }
+    
+    func accessoryConnected(bluetoothAccessory: BluetoothAccessory) {
+        delegate.didConnect(accessory: bluetoothAccessory)
         let accessory = UWBAccessory(manager: self, bluetoothAccessory: bluetoothAccessory)
-        accessories[bluetoothAccessory.discoveredPeripheral.identifier] = accessory
+        accessories[bluetoothAccessory.publicIdentifier] = accessory
         accessory.start()
 
         delegate.didUpdateBluetoothState(state: true)
         delegate.log("Connected to '\(accessory.publicIdentifier)'")
     }
     
-    func accessoryDisconnected(bluetoothAccessory: OpenUWB.BluetoothAccessory) {
-        accessories.removeValue(forKey: bluetoothAccessory.discoveredPeripheral.identifier)
+    func accessoryFailedToConnect(bluetoothAccessory: BluetoothAccessory) {
+        delegate.didFailToConnect(accessory: bluetoothAccessory)
+    }
+
+    func accessoryDisconnected(bluetoothAccessory: BluetoothAccessory) {
+        delegate.didDisconnect(accessory: bluetoothAccessory)
+        accessories.removeValue(forKey: bluetoothAccessory.publicIdentifier)
         if accessories.count == 0 {
             delegate.didUpdateBluetoothState(state: false)
         }
-        delegate.log("Accessory disconnected")
+        delegate.log("Accessory \(bluetoothAccessory.publicIdentifier) disconnected")
     }
     
     // MARK: - Accessory messages handling
     
     func setupAccessory(accessory: UWBAccessory, configData: Data) {
         delegate.log("Received configuration data from '\(accessory.publicIdentifier)'. Running session.")
+        
         do {
-//            if #available(iOS 16.0, *), accessory.bluetoothAccessory.backgroundCapable {
-//                accessory.configuration = try NINearbyAccessoryConfiguration(accessoryData: configData, bluetoothPeerIdentifier: accessory.bluetoothAccessory.discoveredPeripheral.identifier)
-//            } else {
+            if accessory.bluetoothAccessory.backgroundCapable {
+#if os(watchOS)
+                accessory.bluetoothAccessory.backgroundCapable = false
+#else
+                if #available(iOS 16.0, *) {
+                    accessory.configuration = try NINearbyAccessoryConfiguration(accessoryData: configData, bluetoothPeerIdentifier: accessory.bluetoothAccessory.peripheral.identifier)
+                }
+#endif
+            }
+            if !accessory.bluetoothAccessory.backgroundCapable {
                 accessory.configuration = try NINearbyAccessoryConfiguration(data: configData)
-//          }
+            }
         } catch {
             // Stop and display the issue because the incoming data is invalid.
             // In your app, debug the accessory data to ensure an expected
@@ -115,24 +210,29 @@ public class UWBManager {
             delegate.log("Failed to create NINearbyAccessoryConfiguration for '\(accessory.publicIdentifier)'. Error: \(error)")
             return
         }
-        
+
+#if !os(watchOS)
         if #available(iOS 16.0, *) {
-            //accessory.configuration!.isCameraAssistanceEnabled = true
+            accessory.configuration!.isCameraAssistanceEnabled = options.useCameraAssistance
         }
+#endif
         
         // Cache the token to correlate updates with this accessory.
         accessory.cacheToken(accessory.configuration!.accessoryDiscoveryToken, identifier: accessory.publicIdentifier)
         accessory.niSession.delegate = accessory
+#if !os(watchOS)
+        if #available(iOS 16.0, *), let arSession = self.arSession {
+            accessory.niSession.setARSession(arSession)
+        }
+#endif
         accessory.niSession.run(accessory.configuration!)
     }
     
     func handleAccessoryUwbDidStart() {
-        delegate.log("Accessory session started.")
         delegate.didUpdateUWBState(state: true)
     }
     
     func handleAccessoryUwbDidStop() {
-        delegate.log("Accessory session stopped.")
         if accessories.count == 0 {
             delegate.didUpdateUWBState(state: false)
         }
@@ -140,14 +240,25 @@ public class UWBManager {
 }
 
 public protocol UWBManagerDelegate {
+    func didDiscover(accessory: BluetoothAccessory, rssi: NSNumber)
+    func didConnect(accessory: BluetoothAccessory)
+    func didDisconnect(accessory: BluetoothAccessory)
+    func didFailToConnect(accessory: BluetoothAccessory)
+
     func didUpdateBluetoothState(state: Bool)
     func didUpdateUWBState(state: Bool)
+
     func didRequirePermissions()
     func didUpdateAccessory(accessory: UWBAccessory)
     func log(_ message: String)
 }
 
 public extension UWBManagerDelegate {
+    func didDiscover(accessory: BluetoothAccessory, rssi: NSNumber) { }
+    func didConnect(accessory: BluetoothAccessory) { }
+    func didDisconnect(accessory: BluetoothAccessory) { }
+    func didFailToConnect(accessory: BluetoothAccessory) { }
+
     func didUpdateBluetoothState(state: Bool) { }
     func didUpdateUWBState(state: Bool) { }
     func didRequirePermissions() { }

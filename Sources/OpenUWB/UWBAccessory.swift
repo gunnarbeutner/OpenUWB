@@ -67,8 +67,15 @@ public class UWBAccessory: NSObject {
     }
     
     public func start() {
-        let msg = Data([MessageId.initialize.rawValue])
-        sendDataToAccessory(msg)
+        sendDataToAccessory(Data([MessageId.initialize.rawValue]))
+    }
+}
+
+extension UWBAccessory : Identifiable {
+    public var id: String {
+        get {
+            return publicIdentifier
+        }
     }
 }
 
@@ -76,7 +83,6 @@ public class UWBAccessory: NSObject {
 
 extension UWBAccessory: NISessionDelegate {
     public func session(_ session: NISession, didGenerateShareableConfigurationData shareableConfigurationData: Data, for object: NINearbyObject) {
-
         guard object.discoveryToken == configuration?.accessoryDiscoveryToken else { return }
         
         // Prepare to send a message to the accessory.
@@ -90,7 +96,7 @@ extension UWBAccessory: NISessionDelegate {
         
         // Send the message to the accessory.
         sendDataToAccessory(msg)
-        manager.delegate.log("Sent shareable configuration data to '\(accessoryName)'.")
+        manager.delegate.log("Sent shareable configuration data to \(publicIdentifier).")
     }
     
     public func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
@@ -105,7 +111,7 @@ extension UWBAccessory: NISessionDelegate {
     public func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
         // Retry the session only if the peer timed out.
         guard reason == .timeout else { return }
-        manager.delegate.log("Session with '\(self.publicIdentifier)' timed out.")
+        manager.delegate.log("Session with \(publicIdentifier) timed out.")
         
         // The session runs with one accessory.
         guard let accessory = nearbyObjects.first else { return }
@@ -113,22 +119,25 @@ extension UWBAccessory: NISessionDelegate {
         // Clear the app's accessory state.
         accessoryMap.removeValue(forKey: accessory.discoveryToken)
         
-        // TODO: use a timeout
         sendDataToAccessory(Data([MessageId.stop.rawValue]))
-        sendDataToAccessory(Data([MessageId.initialize.rawValue]))
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(5), execute: {
+            // TODO: exponential back-off?
+            if self.bluetoothAccessory.peripheral.state == .connected {
+                self.sendDataToAccessory(Data([MessageId.initialize.rawValue]))
+            }
+        })
     }
     
     public func sessionWasSuspended(_ session: NISession) {
-        manager.delegate.log("Session was suspended.")
-        let msg = Data([MessageId.stop.rawValue])
-        sendDataToAccessory(msg)
+        manager.delegate.log("Session with \(publicIdentifier) was suspended.")
+        sendDataToAccessory(Data([MessageId.stop.rawValue]))
     }
     
     public func sessionSuspensionEnded(_ session: NISession) {
-        manager.delegate.log("Session suspension ended.")
+        manager.delegate.log("Session suspension for \(publicIdentifier) ended.")
         // When suspension ends, restart the configuration procedure with the accessory.
-        let msg = Data([MessageId.initialize.rawValue])
-        sendDataToAccessory(msg)
+        sendDataToAccessory(Data([MessageId.initialize.rawValue]))
     }
     
     public func session(_ session: NISession, didInvalidateWith error: Error) {
