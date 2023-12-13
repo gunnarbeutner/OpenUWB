@@ -16,7 +16,7 @@ import PackageDescription
 let package = Package(
     name: "OpenUWB",
     platforms: [
-        .iOS(.v15), .watchOS(.v8)
+        .iOS(.v15), .watchOS(.v8), .macOS(.v10_14)
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
@@ -25,13 +25,19 @@ let package = Package(
             targets: ["OpenUWB"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.3.0")
+        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.3.0"),
+        .package(url: "https://github.com/jpsim/Yams", .upToNextMinor(from: "5.0.6")),
+        .package(url: "https://github.com/swift-server-community/mqtt-nio", .upToNextMinor(from: "2.8.0")),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "OpenUWB"),
+            name: "OpenUWB",
+            dependencies: [
+                "Yams",
+                .product(name: "MQTTNIO", package: "mqtt-nio")
+            ]),
         .testTarget(
             name: "OpenUWBTests",
             dependencies: ["OpenUWB"]),

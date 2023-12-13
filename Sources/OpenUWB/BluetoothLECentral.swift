@@ -255,7 +255,6 @@ extension DataCommunicationChannel: CBCentralManagerDelegate {
         
         accessories.removeValue(forKey: peripheral.identifier)
     }
-
 }
 
 // An extention to implement `CBPeripheralDelegate` methods.

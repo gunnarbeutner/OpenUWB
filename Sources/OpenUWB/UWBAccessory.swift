@@ -16,25 +16,9 @@ public class UWBAccessory: NSObject {
     var manager: UWBManager
     var bluetoothAccessory: BluetoothAccessory
     var niSession = NISession()
+    public var nearbyObject: NINearbyObject?
+    public var lastSeen: Date
     var configuration: NINearbyAccessoryConfiguration?
-    
-    public var distance: Float?
-    public var direction: simd_float3?
-
-    @available(iOS 16.0, *)
-    @available(watchOS 9.0, *)
-    public private(set) var horizontalAngle: Float? {
-        get {
-            return _horizontalAngle
-        }
-        set {
-            _horizontalAngle = newValue
-        }
-    }
-    
-    private var _horizontalAngle: Float?
-    
-    public var verticalDirectionEstimate: NINearbyObject.VerticalDirectionEstimate = .unknown
     
     // A mapping from a discovery token to a name.
     var accessoryMap = [NIDiscoveryToken: String]()
@@ -44,6 +28,7 @@ public class UWBAccessory: NSObject {
     init(manager: UWBManager, bluetoothAccessory: BluetoothAccessory) {
         self.manager = manager
         self.bluetoothAccessory = bluetoothAccessory
+        self.lastSeen = Date.now
     }
     
     public var publicIdentifier: String {
@@ -66,12 +51,12 @@ public class UWBAccessory: NSObject {
         do {
             try bluetoothAccessory.sendData(data)
         } catch {
-            manager.delegate.log("Failed to send data to accessory: \(error)")
+            manager.delegate?.log("Failed to send data to accessory: \(error)")
         }
     }
     
     func handleSessionInvalidation() {
-        manager.delegate.log("Session invalidated. Restarting.")
+        manager.delegate?.log("Session invalidated. Restarting.")
         // Ask the accessory to stop.
         sendDataToAccessory(Data([MessageId.stop.rawValue]))
 
@@ -108,30 +93,26 @@ extension UWBAccessory: NISessionDelegate {
         let str = msg.map { String(format: "0x%02x, ", $0) }.joined()
         logger.info("Sending shareable configuration bytes: \(str)")
         
-        let accessoryName = accessoryMap[object.discoveryToken] ?? "Unknown"
-        
         // Send the message to the accessory.
         sendDataToAccessory(msg)
-        manager.delegate.log("Sent shareable configuration data to \(publicIdentifier).")
+        manager.delegate?.log("Sent shareable configuration data to \(publicIdentifier).")
     }
     
     public func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         guard let accessory = nearbyObjects.first else { return }
-        //guard let distance = accessory.distance else { return }
-        //guard let name = accessoryMap[accessory.discoveryToken] else { return }
-        
-        self.distance = accessory.distance
-        self.direction = accessory.direction
-        if #available(iOS 16.0, watchOS 9.0, *) {
-            self.horizontalAngle = accessory.horizontalAngle
+        self.nearbyObject = accessory
+        self.lastSeen = Date.now
+        guard let distance = accessory.distance else {
+            handleSessionInvalidation()
+            return
         }
-        manager.delegate.didUpdateAccessory(accessory: self)
+        manager.delegate?.didUpdateAccessory(accessory: self)
     }
 
     public func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
         // Retry the session only if the peer timed out.
         guard reason == .timeout else { return }
-        manager.delegate.log("Session with \(publicIdentifier) timed out.")
+        manager.delegate?.log("Session with \(publicIdentifier) timed out.")
         
         // The session runs with one accessory.
         guard let accessory = nearbyObjects.first else { return }
@@ -141,21 +122,26 @@ extension UWBAccessory: NISessionDelegate {
         
         sendDataToAccessory(Data([MessageId.stop.rawValue]))
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(5), execute: {
-            // TODO: exponential back-off?
-            if self.bluetoothAccessory.peripheral.state == .connected {
-                self.sendDataToAccessory(Data([MessageId.initialize.rawValue]))
-            }
-        })
+        if self.bluetoothAccessory.peripheral.state == .connected {
+            self.sendDataToAccessory(Data([MessageId.initialize.rawValue]))
+        }
+    }
+    
+    @available(iOS 16, *)
+    @available(watchOS 9, *)
+    public func session(_ session: NISession, didUpdateAlgorithmConvergence convergence: NIAlgorithmConvergence, for object: NINearbyObject?) {
+        guard object?.discoveryToken == configuration?.accessoryDiscoveryToken else { return }
+
+        manager._convergenceContext = convergence
     }
     
     public func sessionWasSuspended(_ session: NISession) {
-        manager.delegate.log("Session with \(publicIdentifier) was suspended.")
+        manager.delegate?.log("Session with \(publicIdentifier) was suspended.")
         sendDataToAccessory(Data([MessageId.stop.rawValue]))
     }
     
     public func sessionSuspensionEnded(_ session: NISession) {
-        manager.delegate.log("Session suspension for \(publicIdentifier) ended.")
+        manager.delegate?.log("Session suspension for \(publicIdentifier) ended.")
         // When suspension ends, restart the configuration procedure with the accessory.
         sendDataToAccessory(Data([MessageId.initialize.rawValue]))
     }
@@ -164,9 +150,9 @@ extension UWBAccessory: NISessionDelegate {
         switch error {
         case NIError.invalidConfiguration:
             // Debug the accessory data to ensure an expected format.
-            manager.delegate.log("The accessory configuration data is invalid. Please debug it and try again.")
+            manager.delegate?.log("The accessory configuration data is invalid. Please debug it and try again.")
         case NIError.userDidNotAllow:
-            manager.delegate.didRequirePermissions()
+            manager.delegate?.didRequirePermissions()
         default:
             handleSessionInvalidation()
         }
