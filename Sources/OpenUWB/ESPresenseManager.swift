@@ -18,8 +18,9 @@ public struct DeviceMessage: Decodable {
     /*var disc: String*/
     var idType: Int
     /* var rssi@1m: Int */
-    var rssi: Float
+    var rssi: Int
     var raw: Float
+    var chn: Int
     var distance: Float
     var mac: String
     var int: Int
@@ -27,7 +28,8 @@ public struct DeviceMessage: Decodable {
 
 public struct Measurement {
     public var distance: Float
-    public var rssi: Float
+    public var chn: Int
+    public var rssi: Int
     public var timestamp: Date
 }
 
@@ -72,7 +74,7 @@ public class ESPresenseManager {
                 let tokens = publish.topicName.components(separatedBy: "/")
                 let nodeName = tokens[3]
                 guard let message = try? JSONDecoder().decode(DeviceMessage.self, from: publish.payload) else { continue }
-                var measurement = Measurement(distance: message.distance, rssi: message.rssi, timestamp: Date.now)
+                var measurement = Measurement(distance: message.distance, chn: message.chn, rssi: message.rssi, timestamp: Date.now)
                 measurements[nodeName] = measurement
                 delegate?.didUpdateAccessory(node: nodeName, measurement: measurement)
             case .failure(let error):
@@ -81,11 +83,11 @@ public class ESPresenseManager {
         }
     }
     
-    public func sendLocation(_ location: [Double]) {
+    public func sendLocation<T>(_ location: T) where T : Encodable {
         do {
             let json = try JSONEncoder().encode(location)
             let data = ByteBuffer(data: json)
-            mqttClient.publish(to: "triml/known_locations/\(self.accessoryName!)", payload: data, qos: MQTTQoS.atLeastOnce)
+            mqttClient.publish(to: "openuwb/data", payload: data, qos: MQTTQoS.atLeastOnce)
         } catch {
             print(error)
         }
